@@ -1,11 +1,12 @@
 {
   "name": "vs-ur-sub-store",
-  "version": "1.0.0",
-  "description": "Vercel Serverless + Upstash Redis 的 Sub-Store 后端同步方案",
+  "version": "2.0.0",
+  "description": "Vercel Serverless + Upstash Redis 的 Sub-Store 后端同步方案（增强版）",
   "main": "api/index.js",
   "scripts": {
     "dev": "vercel dev",
-    "deploy": "vercel --prod"
+    "deploy": "vercel --prod",
+    "deploy:preview": "vercel"
   },
   "keywords": [
     "vercel",
@@ -14,10 +15,19 @@
     "redis",
     "sub-store",
     "subscription",
-    "proxy"
+    "proxy",
+    "clash",
+    "surge",
+    "v2ray",
+    "high-availability",
+    "disaster-recovery"
   ],
   "author": "vpn3288",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vpn3288/VS-UR-Sub-Store.git"
+  },
   "engines": {
     "node": ">=18.0.0"
   }
