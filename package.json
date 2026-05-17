@@ -1,7 +1,7 @@
 {
   "name": "vs-ur-sub-store",
-  "version": "2.0.0",
-  "description": "Vercel Serverless + Upstash Redis 的 Sub-Store 后端同步方案（增强版）",
+  "version": "3.0.0",
+  "description": "Vercel Serverless + Upstash Redis 的 Sub-Store 后端同步方案（完整版）",
   "main": "api/index.js",
   "scripts": {
     "dev": "vercel dev",

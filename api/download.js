@@ -1,17 +1,18 @@
 /**
- * 订阅下载 API（增强版）
+ * 订阅下载 API（完整版）
  * 路由: /api/download/[id]
  * 
- * 新增功能：
+ * 功能：
  * 1. 性能监控和详细日志
  * 2. 速率限制保护
- * 3. 内容格式转换（Clash/Surge/V2Ray）
+ * 3. 真实的内容格式转换（Clash/Surge/V2Ray/Base64）
  * 4. 智能缓存策略
  * 5. 错误重试机制
  */
 
 const UpstashRedis = require('../lib/redis');
 const { getCache } = require('../lib/cache');
+const SubscriptionConverter = require('../lib/converter');
 const { 
   handleCORS, 
   errorResponse, 
@@ -65,11 +66,11 @@ module.exports = async (req, res) => {
 
     // 解析查询参数
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const format = url.searchParams.get('format') || 'auto'; // auto/clash/surge/v2ray
+    const format = url.searchParams.get('format') || 'auto'; // auto/clash/surge/v2ray/base64
     const clean = url.searchParams.get('clean') === 'true'; // 是否清洗内容
 
     // 缓存键（包含格式信息）
-    const cacheKey = `download:${id}:${format}`;
+    const cacheKey = `download:${id}:${format}:${clean}`;
     const configCacheKey = `subscription:${id}`;
 
     // 1. 检查内存缓存（热启动优化）
@@ -78,10 +79,10 @@ module.exports = async (req, res) => {
     if (!shouldRefresh) {
       const cachedContent = cache.get(cacheKey);
       if (cachedContent) {
-        log('info', 'Cache hit (memory)', { id, clientIP, format, latency: '<10ms' });
+        log('info', 'Cache hit (memory)', { id, clientIP, format, clean, latency: '<10ms' });
         timer.checkpoint('memory_cache_hit');
         
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Content-Type', getContentType(format));
         res.setHeader('X-Cache-Status', 'HIT-MEMORY');
         res.setHeader('X-Cache-Latency', '<10ms');
         res.setHeader('X-Performance', JSON.stringify(timer.end()));
@@ -121,7 +122,7 @@ module.exports = async (req, res) => {
       const cachedContent = cache.get(cacheKey);
       if (cachedContent) {
         log('info', 'Fallback to stale cache', { id, clientIP, reason: 'redis_error' });
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Content-Type', getContentType(format));
         res.setHeader('X-Cache-Status', 'STALE-FALLBACK');
         res.setHeader('X-Redis-Error', error.message);
         return res.status(200).send(cachedContent);
@@ -161,8 +162,14 @@ module.exports = async (req, res) => {
 
       // 5. 格式转换（如果需要）
       if (format !== 'auto') {
-        content = await convertFormat(content, format);
-        timer.checkpoint('format_conversion');
+        try {
+          content = await SubscriptionConverter.convert(content, format);
+          timer.checkpoint('format_conversion');
+          log('info', 'Format converted', { id, format, originalSize: content.length });
+        } catch (convError) {
+          log('warn', 'Format conversion failed', { id, format, error: convError.message });
+          // 转换失败时返回原内容
+        }
       }
 
       // 6. 写入内存缓存（5分钟）
@@ -175,6 +182,7 @@ module.exports = async (req, res) => {
         ['HSET', `subscription:${id}:meta`, 'last_fetch', now.toString()],
         ['HINCRBY', `subscription:${id}:stats`, 'total_downloads', '1'],
         ['HSET', `subscription:${id}:stats`, 'last_download_ip', clientIP],
+        ['HSET', `subscription:${id}:stats`, 'last_download_format', format],
       ]).catch(err => {
         log('warn', 'Failed to update stats', { id, error: err.message });
       });
@@ -186,6 +194,7 @@ module.exports = async (req, res) => {
         clientIP, 
         size: content.length, 
         format,
+        clean,
         performance: timer.end(),
       });
 
@@ -196,7 +205,7 @@ module.exports = async (req, res) => {
       const cachedContent = cache.get(cacheKey);
       if (cachedContent) {
         log('info', 'Fallback to stale cache', { id, clientIP, reason: 'upstream_error' });
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Content-Type', getContentType(format));
         res.setHeader('X-Cache-Status', 'STALE-UPSTREAM-ERROR');
         res.setHeader('X-Upstream-Error', error.message);
         return res.status(200).send(cachedContent);
@@ -207,12 +216,14 @@ module.exports = async (req, res) => {
 
     // 8. 返回内容
     const perfData = timer.end();
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Type', getContentType(format));
     res.setHeader('X-Cache-Status', 'MISS');
     res.setHeader('Content-Length', Buffer.byteLength(content, 'utf-8'));
     res.setHeader('Cache-Control', 'public, max-age=300'); // 客户端缓存5分钟
     res.setHeader('X-Performance', JSON.stringify(perfData));
     res.setHeader('X-Subscription-Name', encodeURIComponent(subscription.name));
+    res.setHeader('X-Original-Format', SubscriptionConverter.detectFormat(content));
+    res.setHeader('X-Output-Format', format);
     res.status(200).send(content);
 
   } catch (error) {
@@ -222,23 +233,18 @@ module.exports = async (req, res) => {
 };
 
 /**
- * 格式转换（简化版，实际需要更复杂的解析）
+ * 根据格式返回正确的 Content-Type
  */
-async function convertFormat(content, targetFormat) {
-  // 这里只是示例，实际需要根据不同格式进行解析和转换
-  // 可以集成 sub-converter 或自己实现解析逻辑
-  
-  switch (targetFormat) {
+function getContentType(format) {
+  switch (format) {
     case 'clash':
-      // 转换为 Clash 格式
-      return content; // 暂时直接返回
-    case 'surge':
-      // 转换为 Surge 格式
-      return content;
+      return 'text/yaml; charset=utf-8';
     case 'v2ray':
-      // 转换为 V2Ray 格式
-      return content;
+      return 'application/json; charset=utf-8';
+    case 'surge':
+    case 'base64':
+    case 'auto':
     default:
-      return content;
+      return 'text/plain; charset=utf-8';
   }
 }
